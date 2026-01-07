@@ -1,3 +1,5 @@
+# Statistical Bayesian Analysis of Global Professional Powerlifters
+
 This report analyzes the average maximum back squat, in Kilograms, for Male Power Lifters around the
 world. In particular, we will be focusing on official competition results of lifters from the United States,
 China, Russia, Poland, and United Kingdom. A Bayesian Hierarchical Linear Model, assuming random

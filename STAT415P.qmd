@@ -1,0 +1,659 @@
+---
+title: "STAT415P"
+format: html
+embed-resources: true
+author: 'Alejandro Gomez'
+code-fold: true
+---
+
+# STAT415 Project
+
+# Are Some Nations Stronger Than Others?
+
+![](STAT415Pimg.jpg)
+
+```{r libraries, echo = F}
+#| warning: false
+
+library(tidyverse)
+library(kableExtra)
+library(emmeans)
+library(brms)
+library(tidybayes)
+library(bayesplot)
+library(lme4)
+```
+
+```{r datasets, echo = F}
+#| warning: false
+
+lifts = read_csv("lifting.csv")
+```
+
+## Abstract
+
+This report analyzes the average maximum back squat, in Kilograms, for Male Power Lifters around the world. In particular, we will be focusing on official competition results of lifters from the United States, China, Russia, Poland, and United Kingdom. A Bayesian Hierarchical Linear Model, assuming random intercepts, is performed to investigate if the population average maximum back squat for male professional power lifters is the same for all 5 nations. After observing data, pairwise comparisons and other Bayesian techniques suggest the contrary. Particularly, it is estimated that China and Poland are the strongest of the nations, while the UK and USA are the weakest. While Bayesian Statistics will not always provide direct results of a distinct difference between National Means, we will use a combination of Frequentest and Bayesian analyses to do this.
+
+## Research Question
+
+In particular, we will be investigating whether these 5 nations share the same population mean maximum back squat for Power Lifters with the criteria listed below:
+
+**Inclusion Criteria:**
+
+1.  Male Lifters
+
+2.  Ages 24-34
+
+3.  100-110 Kg body weight classes
+
+4.  No equipment used
+
+5.  Lifts from competitions no earlier than year 2000.
+
+It is important the inclusion criteria for this analysis is implemented, specifically because of how many weight classes there are for lifters, and the strong correlation between Body Weight and the amount of weight one can lift. We want to narrow down the analysis to continue focus on a large pool of lifters while also strengthening the credibility and practical application of our results.
+
+## Data
+
+The data of interest data contains over 3 Million observations on world wide Power Lifting competitions for a wide range of body weight classes, ages, and nations. Data is collected from 1964 to 2019. For purposes of our study, we will be focusing primarily on the Maximum Back Squat of 3 attempts per Lifter in official competitions. For context, in an official power lifting competition, lifters are given 3 attempts for back squat, and the highest score is recorded. A snap shot of the original and cleaned data set is provided below:
+
+**Original Data**
+
+```{r}
+lifts |> 
+  head(5) |> 
+  kable() |> 
+  kable_styling()
+```
+
+
+**Summary of Cleaned Data**
+
+```{r data cleaning}
+
+nations = c("USA","UK","Russia","Poland","China")
+weights = c('100','105','110')
+
+my_lifts = lifts |> 
+  filter(Country %in% nations,
+         Sex == 'M',
+         Equipment == 'Raw',
+         AgeClass == '24-34',
+         WeightClassKg %in% weights,
+         !is.na(Best3SquatKg),
+         Best3SquatKg > 0,
+         as.numeric(year(Date)) >= 2000)|> 
+  group_by(Country) |>
+  slice_sample(n=100)
+
+my_lifts|> 
+  summarize('Avg Max Squat (Kgs)' = mean(Best3SquatKg)) |> 
+  kable() |> 
+  kable_styling()
+```
+
+-   The cleaned data above provides the observed Average Maximum Back Squat for each of the 5 nations
+
+```{r data cleaning 2}
+#| echo: false
+
+my_lifts = my_lifts |> 
+  select(Country,Best3SquatKg) |> 
+  rename(nation = "Country",
+         squat = "Best3SquatKg")
+```
+
+```{r}
+#| echo: false
+#| output: false
+
+ggplot(my_lifts, aes(x = squat)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 col = 'green4', fill = "white",
+                 bins = 100) +
+  geom_density(linewidth = 1, col = 'green4') +
+  stat_function(fun = dnorm, args = list(mean = 220, sd = 30),
+                col = "black", linewidth = 1, linetype = "dashed") + 
+  xlim(50,350) + 
+  labs(x = "Maximum Back Squat", y = "", title = "Observed Maximum Back Squats (KGs)")
+  theme_bw()
+```
+
+## Validity Conditions
+
+Under the implementation of any Linear Model, it is important that the Validity Conditions of our data are met. The visualizations provided below help verify Independence, Normality, and Equal Variance.
+
+```{r}
+#| echo: false
+
+lift.fit = lm(squat ~ nation, my_lifts)
+
+resids = lift.fit$residuals
+fits = lift.fit$fitted.values
+
+```
+
+**Independence**
+
+While this data does not come from an experiment, I have randomly selected 100 lifters from each of the five nations, from a larger pool of lifters. We know that our data contains information on unique lifters, and we will assume Independence for the purposes of our analysis.
+
+**Equal Variance**
+
+```{r}
+# Resids vs Fitted plot
+
+ggplot(my_lifts,aes(x=fits,y=resids)) + 
+  geom_point() +
+  geom_hline(yintercept = 0, col = 'darkgreen') + 
+  labs(y='Residuals',x='Fitted', title = 'Residual vs. Fitted Plot')
+```
+
+Based on the residuals vs. fitted plot, the vast majority of points fall in between expected residual bands/distances, so we can assume equal variance.
+
+**Normality**
+
+```{r}
+# qqplot
+ggplot(my_lifts,aes(sample = resids)) +
+  stat_qq() +
+  stat_qq_line(color = "red", linetype = "dashed") +
+  labs(title = "Q-Q Plot of Residuals",
+       x = "Theoretical Quantiles",
+       y = "Sample Quantiles")
+```
+
+After observation of the QQPlot, all points follow very strong linear path, so normality may be assumed.
+
+## Prior Assumptions
+
+Our analysis will implement the use of a Bayesian Hierarchical linear model.
+
+In doing so, we will assume each individual Max Back Squat for Power Lifters in the same Nation follow a normal distribution. Each within-nation observation is also assumed to be independent of each other.
+
+$y_{ij} \sim N(\mu_j,\sigma^2)$
+
+Where...
+
+$y_{ij}$ : The Max Back Squat of Power Lifter i from Nation j
+
+$\mu_j$ : Population Mean Max Back Squat for Nation j
+
+$\sigma$ : Population within-nation variability in squat performance - the expected deviation of a Power Lifter's Max Back Squat from the national average
+
+We will also assume the True National Average Max Back Squats are independently drawn from a common population distribution. However, in the posterior, these estimates may be correlated due to shared information across nations.
+
+$\mu_j \sim N(\mu,\tau^2)$
+
+Where...
+
+$\mu$ : Overall Population Average Maximum Back Squat for all 5 nations
+
+$\tau$: Population between-nation variability in squat performance - the expected deviation of a Nation's population mean back squat from the International Average (of the 5 nations).
+
+## Prior Distributions
+
+Prior Distribution for the Internation Population Mean Back Squat (across all 5 Nations):
+
+$\mu \sim N(mean = 220, sd = 20)$
+
+-   Based on my Prior knowledge of Power Lifting, I would expect the overall mean max squat for the 5 nations to be around 220 Kilograms with a prior uncertainty of about 20 Kilograms.
+
+Prior Distribution for Within Nation Variability:
+
+$\sigma \sim N(mean = 15, sd = 8)$
+
+-   Based on my Prior knowledge, I expect the Population Within-Nation variation in max back squats for the five nations to follow a normal distribution with mean 15 and a prior uncertainty of about 8 Kilograms.
+
+Prior Distribution for Between Nation Variability:
+
+$\tau \sim N(mean = 0,sd = 15)$
+
+-   Based on my prior knowledge, I expect the Population Between-Nation variation in Population Average Max Back Squats to follow a normal distribution with mean 0 and standard deviation 15. This distribution reflects my prior hypothesis that the Nations' population means do not differ from one another.
+
+## Prior Predictive Tuning
+
+Before jumping in the the analysis, it is important to ensure that our Prior Distributions provide reasonable results that won't interfere with our procedure. For these reasons, we will conduct Prior Predictive checks to ensure a reliable analysis.
+
+-   In this case, we will use brms to simulate many simulated Maximum Back Squat results across all 5 Nations, using only our prior distributions and assumptions. We will then analyze the resulting Prior Predictive Distribution.
+
+```{r prior input}
+#| output: false
+
+# inputting the data into brms
+prior.fit <- brm(
+  squat ~ 1 + (1 | nation), # nation as a random effect
+  data = my_lifts,
+  family = gaussian(),
+  prior = c(
+    prior(normal(220, 20), class = "Intercept"),  
+    prior(normal(15,8), class = "sigma"),
+    prior(normal(0, 15), class = "sd", group = "nation")  
+  ),
+  sample_prior = "only",  # Sampling only from prior
+  chains = 4, iter = 2000, warmup = 500, seed = 123
+)
+```
+
+```{r prior hist}
+#| warning: false
+
+# extracting simulated ys
+prior_y = posterior_predict(prior.fit)
+
+# reformatting into long version dataset
+prior_long = as.data.frame(prior_y) |>
+  pivot_longer(cols = everything(), names_to = "obs", values_to = "squat")
+
+#graphing Prior Predictive Distirbution
+ggplot(prior_long, aes(x = squat)) +
+  geom_histogram(bins = 50, fill = "skyblue", color = "white") +
+  labs(title = "Prior Predictive Distribution of Internation Squat Results",
+       x = "Squat (kg)", y = "Frequency") +
+  xlim(50,350) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+```
+
+```{r prior table}
+data.frame(Mean = mean(prior_y),Median = median(prior_y), Std.Dev = sd(prior_y)) |> 
+  kable() |> 
+  kable_styling()
+
+pi1 = quantile(prior_y,c(0.01,0.1,0.25,0.5,0.75,0.9,0.99))
+pi1
+
+```
+
+The Prior Predictive Distribution follows a closely normal distribution with a mean of about 220 KGs and a loose standard deviation of about 30KGs. I believe this to provide strong evidence of reliable prior distributions because there contains no unreasonable squat values that I wouldn't expect from a Professional Power Lifter.
+
+**98% Credible Interval:** Before observing data it is 49 times more likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi1[[1]],3)` and `r round(pi1[[7]],3)`, than not.
+
+**80% CI:** Before observing data it is 4 times more likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi1[[2]],3)` and `r round(pi1[[6]],3)`, than not.
+
+**50% CI:** Before observing data it is equally likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi1[[3]],3)` and `r round(pi1[[5]],3)`, than not.
+
+**National Prior Predictive Distributions**
+
+The plot below displays the Prior Predictive Distribution for each Individual Nation. All distributions are very similar to each other, and show no signs of significant, practically unrealistic outliers. This visualization only provides more evidence of sufficient prior distributions.
+
+```{r prior by nation}
+prior_long$nation = rep(my_lifts$nation, each = nrow(prior_y))
+
+ggplot(prior_long, aes(x = squat, fill = nation)) +
+  geom_histogram(bins = 40, alpha = 0.6, position = "identity") +
+  facet_wrap(~ nation) +
+  theme_minimal() +
+  labs(title = "Prior Predictive Distribution by Nation", x = 'Max Back Squat (KGs)')
+```
+
+## Posterior Distribution
+
+After approval of our prior distributions, we will now move to Posterior Inference. In our model, we will be treating the intercept as random (A Frequentest interpretation would be treating Nation as a Random Effect).
+
+```{r brm}
+#| output: false
+
+post.fit = brm(
+  squat ~ 1 + (1 | nation),  # random intercept model
+  data = my_lifts,
+  family = gaussian(),      
+  prior = c(
+    prior(normal(220, 20), class = "Intercept"),         # mu_global
+    prior(normal(15,8), class = "sigma"),         # within-nation SD
+    prior(normal(0,15), class = "sd", group = "nation")  # between-nation SD (tau)
+  ),
+  chains = 4, iter = 4000, warmup = 1000, cores = 4, seed = 123
+)
+```
+
+```{r}
+summary(post.fit)
+```
+
+```{r}
+nums = as_draws_df(post.fit)
+nums = nums |> 
+  summarize(Estimate = mean(Intercept),
+            Sigma = mean(sigma),
+            Tau = mean(sd_nation__Intercept))
+```
+
+```{r}
+plot(post.fit)
+```
+
+$\mu$ = `r round(nums[[1]],3)`
+
+-   After observing data, we estimate the true International mean max back squat for Power Lifters in all 5 nations to be about `r round(nums[[1]],3)` Kilograms.
+
+$\sigma$ = `r round(nums[[2]],3)`
+
+-   After observing data, we estimate the typical deviation of a Power Lifter's max back squat from his nation's population mean max back squat to be about `r round(nums[[2]],3)` Kilograms.
+
+$\tau$ = `r round(nums[[3]],3)`
+
+-   After observing data, we estimate the typical deviation of a nation's true mean max back squat from the International national mean max back squat to be about `r round(nums[[3]],3)` Kilograms.
+
+The plot below measures how well the MCMC sampling worked. Because the chains follow each other relatively well, we can conclude that we have obtained quality posterior data.
+
+```{r}
+mcmc_dens_overlay(post.fit, pars = vars(b_Intercept, sd_nation__Intercept, sigma))
+```
+
+## Posterior Prediction and Checks
+
+To ensure our model assumptions suit our posterior data and validate our inference, we will also conduct some Posterior predictive checks. The following displays the Posterior predictive Distribution of Max Squats across all nations.
+
+```{r}
+#| warning: false
+
+post_y = posterior_predict(post.fit)
+
+post_long = as.data.frame(post_y) |>
+  pivot_longer(cols = everything(), names_to = "obs", values_to = "squat")
+```
+
+```{r}
+#| warning: false
+
+ggplot(prior_long, aes(x = squat)) +
+  geom_histogram(bins = 50, fill = "skyblue", color = "white") +
+  labs(title = "Posterior Predictive Distribution of Squat",
+       x = "Squat (kg)", y = "Frequency") +
+  xlim(50,350) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+```
+
+```{r}
+data.frame(Mean = mean(post_y),Median = median(post_y), Std.Dev = sd(post_y)) |> 
+  kable() |> 
+  kable_styling()
+dist = as.vector(post_long$squat)
+levels = c(0.01,0.1,0.25,0.5,0.75,0.9,0.99)
+pi2 = quantile(dist,levels)
+```
+
+The Posterior Predictive Distribution follows a closely normal distribution with a mean of about 231 KGs and a loose standard deviation of about 38KGs.
+
+**98% Credible Interval:** After observing data it is 49 times more likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi2[[1]],3)` and `r round(pi2[[7]],3)`, than not.
+
+**80% CI:** Before observing data it is 4 times more likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi2[[2]],3)` and `r round(pi2[[6]],3)`, than not.
+
+**50% CI:** Before observing data it is equally likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi2[[3]],3)` and `r round(pi2[[5]],3)`, than not.
+
+```{r}
+pp_check(post.fit, ndraws = 100)
+```
+
+Based on the plot above, our model seems to fit our data pretty well. There is one small deviation from the cloud of simulations, but I do not believe it is enough to completely invalidate our model. For this reason, we can assume that our model fits our data, and our results are reasonable and relatively reliable.
+
+## Comparing Nations
+
+**Posterior Fixed Effects Table**
+
+The table below displays the posterior effect of each Nation on the True International Average Max Back Squat, followed by their corresponding Standard Errors, and 95% Credible Intervals.
+
+```{r}
+ranef(post.fit)$nation |> 
+  as.data.frame() |> 
+  rownames_to_column(var = "Effect") |> 
+  kable(col.names = c("Fixed Effects","Estimate","Std. Error","Lwr 95% CI","Upr 95% CI")) |> 
+  kable_styling()
+```
+
+To visualize the effects table above, this plot below displays the Posterior Mean Max Back Squat for each Nation, with each of their corresponding 95% Credible Intervals.
+
+```{r}
+fixef_df <- as.data.frame(fixef(post.fit))
+ranef_df <- as.data.frame(ranef(post.fit)$nation[, , "Intercept"])
+ranef_df$nation <- rownames(ranef(post.fit)$nation)
+
+ranef_df$posterior_mean <- fixef_df$Estimate[1] + ranef_df$Estimate
+ranef_df$lower <- fixef_df$Estimate[1] + ranef_df$Q2.5
+ranef_df$upper <- fixef_df$Estimate[1] + ranef_df$Q97.5
+
+ggplot(ranef_df, aes(x = reorder(nation, -posterior_mean), y = posterior_mean)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2, col = 'royalblue4') +
+  geom_line(group = 1, linewidth = 0.1) +
+  labs(x = "Nation", y = "Posterior Mean Squat (kg)", 
+       title = "Estimated Mean Squat by Nation (with 95% Credible Intervals)") +
+  theme_minimal()
+```
+
+```{r}
+# exctracting the simulated y for each nation
+post_draws = as_draws_df(post.fit)
+mu_russia = post_draws[["r_nation[Russia,Intercept]"]]
+mu_poland = post_draws[["r_nation[Poland,Intercept]"]]
+mu_usa = post_draws[["r_nation[USA,Intercept]"]]
+mu_china = post_draws[["r_nation[China,Intercept]"]]
+mu_uk = post_draws[["r_nation[UK,Intercept]"]]
+```
+
+```{r}
+# Create a named list of pairwise differences
+pairwise_diffs = list(
+  "Russia - USA"   = mu_russia - mu_usa,
+  "Russia - China" = mu_russia - mu_china,
+  "Russia - Poland"= mu_russia - mu_poland,
+  "Russia - UK"    = mu_russia - mu_uk,
+  "USA - China"    = mu_usa - mu_china,
+  "USA - Poland"   = mu_usa - mu_poland,
+  "USA - UK"       = mu_usa - mu_uk,
+  "Poland - China" = mu_poland - mu_china,
+  "Poland - UK"    = mu_poland - mu_uk,
+  "China - UK"     = mu_china - mu_uk)
+```
+
+```{r}
+pairwise_df = bind_rows(
+  lapply(names(pairwise_diffs), function(name) {
+    tibble(
+      contrast = name,
+      difference = pairwise_diffs[[name]])}),
+  .id = "pair")
+```
+
+The grid of curves below represents the Posterior Distributions for the differences in True National Mean Max Back Squat between pairs of 2 Nations.
+
+```{r}
+ggplot(pairwise_df, aes(x = difference)) +
+  geom_histogram(bins = 40, fill = "steelblue", color = "white") +
+  facet_wrap(~ contrast, scales = "free", ncol = 2) +
+  theme_minimal() +
+  labs(title = "Posterior Distributions of Pairwise Nation Differences",
+       x = "Difference in Squat (kg)",
+       y = "Frequency") + 
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+```
+
+Using what we know from these tables and plots, it is reasonable enough to say that the True National Mean Max back Squats between the 5 nations are likely not the same. This is supported by the varying largely effects estimates (both positive and negative values) and the many Posterior Difference Distributions that do not contain 0, like USA and Poland.
+
+In this investigation, we will assume a region of practical significance to be $\pm$ 2.5 KGs, meaning we define two Nations to have distinctly different National Mean Max Back Squats if their means differ by more than 2.5 KGs.
+
+The table below displays the following Information:
+
+Contrast: Specific Posterior Difference Distribtuion between 2 Nations
+
+Mean_Diff: Pairwise Difference in Average Max Back Squat between 2 nations
+
+Lower/Upper_95: 95% Credible Interval measuring Posterior Probability that the True Difference in Average Squat between 2 Nations is in the specified interval
+
+Prob_in_Rope: The Posterior probability that the True Differnce in average Squat between 2 Nations is less than $\pm$ 2.5 Kgs.
+
+Decision: Using Prob_in_Rope, it is decided whether the 2 Nations' Population Average Max Back Squats are distinctly different from each other.
+
+```{r}
+rope_threshold <- 2.5  # you define what counts as negligible
+
+rope_table <- lapply(names(pairwise_diffs), function(name) {
+  diff_vec <- pairwise_diffs[[name]]
+  
+  tibble(
+    contrast = name,
+    mean_diff = round(mean(diff_vec),3),
+    lower_95 = round(quantile(diff_vec, 0.025),3),
+    upper_95 = round(quantile(diff_vec, 0.975),3),
+    prob_in_rope = round(mean(abs(diff_vec) < rope_threshold),3),  # Pr(|diff| < 2.5)
+    decision = case_when(
+      mean(abs(diff_vec) < rope_threshold) > 0.9 ~ "Practically Equivalent",
+      mean(diff_vec > 0) > 0.95 ~ "First > Second",
+      mean(diff_vec < 0) > 0.95 ~ "Second > First",
+      TRUE ~ "Unclear"
+    )
+  )
+}) |> bind_rows()
+
+rope_table |> 
+  kable() |> 
+  kable_styling()
+```
+
+The letters table below summarizes the table above, helping us understand which Nations are estimated to have practically different National Average Max Back Squats from each other, after observing data.
+
+```{r}
+data.frame(Nation = c("Poland","China","Russia","USA","UK"),
+           Letters = c("A","AB","__C","__CD","___D")) |> 
+  kable() |> 
+  kable_styling()
+```
+
+In conclusion, observing data revealed that Poland and China have the largest True National Average Max Back Squats, standing out from the other 3 Nations. With a region of practical significance of $\pm$ 2.5 KGs, we are unable to differentiate the results of Poland and China from one another. On the other end, observing data also revealed that the United Kingdom had the lowest National Average Max Back Squat, which is also statistically indistinguishable from the United States.
+
+## Sensitivity Analysis
+
+Now we will be analyzing the how sensitive our Posterior Data is to different Prior Distributions. To understand this, we will lets brms provide the prior distributions and conduct the analysis.
+
+```{r def brm}
+#| output: false
+
+def.fit <- brm(
+  data = my_lifts,
+  squat ~ 1 + (1 | nation),  # random intercept model
+  family = gaussian(),       # default; models normally-distributed response
+  sample_prior = TRUE,
+  chains = 4, iter = 4000, warmup = 1000, cores = 4, seed = 123
+)
+```
+
+```{r}
+summary(def.fit)
+```
+
+```{r}
+nums2 = as_draws_df(def.fit)
+nums2 = nums2 |> 
+  summarize(Estimate = mean(Intercept),
+            Sigma = mean(sigma),
+            Tau = mean(sd_nation__Intercept))
+```
+
+$\mu$ estimate: `r round(nums2[[1]],3)`
+
+$\sigma$ estimate: `r round(nums2[[2]],3)`
+
+$\tau$ estimate: `r round(nums2[[3]],3)`
+
+-   These inference results are not exact, but are very similar to our original analysis when we chose our own prior distributions.
+
+```{r}
+#| warning: false
+
+def_y = posterior_predict(def.fit)
+
+def_long = as.data.frame(def_y) |>
+  pivot_longer(cols = everything(), names_to = "obs", values_to = "squat")
+```
+
+```{r}
+#| warning: false
+
+ggplot(def_long, aes(x = squat)) +
+  geom_histogram(bins = 50, fill = "skyblue", color = "white") +
+  labs(title = "Prior Predictive Distribution of Squat",
+       x = "Squat (kg)", y = "Frequency") +
+  xlim(50,350) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())
+```
+
+```{r}
+data.frame(Mean = mean(def_y),Median = median(def_y), Std.Dev = sd(def_y)) |> 
+  kable() |> 
+  kable_styling()
+dist = as.vector(def_long$squat)
+levels = c(0.01,0.1,0.25,0.5,0.75,0.9,0.99)
+pi3 = quantile(dist,levels)
+```
+
+The Posterior Predictive Distribution follows a closely normal distribution with a mean of about 231 KGs and a loose standard deviation of about 39KGs. This distribution is very identical to our previous posterior predictive distribution.
+
+**98% Credible Interval:** After observing data it is 49 times more likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi3[[1]],3)` and `r round(pi3[[7]],3)`, than not.
+
+**80% CI:** Before observing data it is 4 times more likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi3[[2]],3)` and `r round(pi3[[6]],3)`, than not.
+
+**50% CI:** Before observing data it is equally likely that the True Population Mean Back Squat for Professional Male Power Lifters in these 5 nations under the specified inclusion criteria is between `r round(pi3[[3]],3)` and `r round(pi3[[5]],3)`, than not.
+
+```{r}
+pp_check(def.fit, ndraws = 100)
+```
+
+This visual is also almost exactly identical to the prior one, ensuring relatively reliable assumptions and data.
+
+In Conclusion, we have reason to believe that Prior Distributions have very little influence on Posterior Data.
+
+## Frequentest One Way Anova
+
+This analysis can also be performed under a frequentest perspective. More specifically, we can run a one way ANOVA, treating nation as a random effect.
+
+```{r}
+squat.fit = lmer(squat ~ (1 | nation), data = my_lifts)
+summary(squat.fit)
+```
+
+$\mu$: `r round(fixef(squat.fit)[["(Intercept)"]],3)`
+
+$\sigma$: `r round(sigma(squat.fit),3)`
+
+$\tau$: `r round(sqrt(VarCorr(squat.fit)$nation[1]),3)`
+
+-   These results are very similar to our Bayesian Analysis and provide identical conlcusions.
+
+**Pairwise Comparisons**
+
+```{r}
+ranef(squat.fit)$nation |> 
+  kable() |> 
+  kable_styling()
+```
+
+-   China and Poland Are the strongest with UK and USA being the weakest. These results are extremely identical under our Bayesian analysis.
+
+## Conclusions
+
+Reflecting on our analysis, we can summarize our conclusions into 3 sections:
+
+**International Conclusions**
+
+-   After observing data, it is estimated that the Nationwide Population Average Maximum Back Squat for Power Lifters with the specified criteria to be `r round(nums[[1]],3)` Kilograms, with the 5 Nations varying from the Nationwide Mean by around `r round(nums[[2]],3)` Kilograms.
+
+-   It is also estimated that within each Nation, individual Maximum Back Squats vary from the National Average Maximum by around `r round(nums[[3]],3)` Kilograms.
+
+-   We also have evidence to conclude that the National Population Average Maximum Back Squat for each of the 5 nations are NOT the same.
+
+
+**Nation-Specific Conclusions**
+
+-   After observing data, Poland and China are the Strongest Back Squatting nations of the 5, as their respective estimated Population Average Maximum Back Squats are about 244 and 248 Kilograms. After analysis of posterior differences and implementing a region of practical significance of $\pm$ 2.5 Kilograms, it cannot be distinguished if either Poland or China is stronger than the other. On the other hand, our analysis suggests that the United Kingdom is the weakest of the 5 nations, and is statistically indistinguishable from the United States. Russia takes home the middle of the 5 nations, but is also statistically indistinguishable from the United States.
+
+**Model Specific Conclusions**
+
+-   Under a Bayesian Hierarchical Linear Model, the choice of prior distribution does not have a significant impact on the outcome of the posterior data.
+
+-   Our model will result in comparable results to the Frequentest One-Way ANOVA, treating Nation as a random effect.
